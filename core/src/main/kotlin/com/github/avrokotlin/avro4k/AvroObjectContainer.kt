@@ -7,6 +7,7 @@ import kotlinx.serialization.SerializationStrategy
 import kotlinx.serialization.serializer
 import org.apache.avro.Schema
 import org.apache.avro.file.CodecFactory
+import org.apache.avro.file.DataFileConstants
 import org.apache.avro.file.DataFileStream
 import org.apache.avro.file.DataFileWriter
 import org.apache.avro.io.DatumReader
@@ -40,8 +41,14 @@ public sealed class AvroObjectContainer(
     ): AvroObjectContainerWriter<T> {
         val datumWriter: DatumWriter<T> = KotlinxSerializationDatumWriter(serializer, avro)
         val dataFileWriter = DataFileWriter(datumWriter)
-        builder(AvroObjectContainerBuilder(dataFileWriter))
-        dataFileWriter.create(schema, outputStream)
+        val containerBuilder = AvroObjectContainerBuilder(dataFileWriter)
+        builder(containerBuilder)
+        val syncMarker = containerBuilder.syncMarker
+        if (syncMarker != null) {
+            dataFileWriter.create(schema, outputStream, syncMarker)
+        } else {
+            dataFileWriter.create(schema, outputStream)
+        }
         return AvroObjectContainerWriter(dataFileWriter)
     }
 
@@ -102,6 +109,20 @@ public inline fun <reified T> AvroObjectContainer.decodeFromStream(
 
 @ExperimentalAvro4kApi
 public class AvroObjectContainerBuilder internal constructor(private val fileWriter: DataFileWriter<*>) {
+    internal var syncMarker: ByteArray? = null
+        private set
+
+    /**
+     * Fixes the 16-byte block sync marker instead of generating a random one, making the output byte-for-byte deterministic.
+     * Prefer a random-looking value so readers can still resynchronize within a stream.
+     */
+    public fun syncMarker(value: ByteArray) {
+        require(value.size == DataFileConstants.SYNC_SIZE) {
+            "sync marker must be exactly ${DataFileConstants.SYNC_SIZE} bytes, got ${value.size}"
+        }
+        syncMarker = value.copyOf()
+    }
+
     public fun metadata(
         key: String,
         value: ByteArray,
